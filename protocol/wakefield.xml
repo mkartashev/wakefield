@@ -1,0 +1,30 @@
+<protocol name="wakefield">
+    <interface name="wakefield" version="1">
+        <request name="move_surface">
+            <arg name="surface" type="object" interface="wl_surface"/>
+            <arg name="x" type="int"/>
+            <arg name="y" type="int"/>
+        </request>
+
+        <request name="get_surface_location">
+            <arg name="surface" type="object" interface="wl_surface"/>
+        </request>
+
+        <event name="surface_location">
+            <arg name="surface" type="object" interface="wl_surface"/>
+            <arg name="x" type="int"/>
+            <arg name="y" type="int"/>
+        </event>
+
+        <request name="get_pixel_color">
+            <arg name="x" type="int"/>
+            <arg name="y" type="int"/>
+        </request>
+
+        <event name="pixel_color">
+            <arg name="x" type="int"/>
+            <arg name="y" type="int"/>
+            <arg name="rgb" type="uint"/>
+        </event>
+    </interface>
+</protocol>
