@@ -28,6 +28,8 @@ $ make
 ```
 
 ## Run
+Use `./run.sh` in the project root or
+
 ```bash
 PWD=`pwd`
 weston -B wayland-backend.so --socket=wayland-test \
