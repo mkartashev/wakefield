@@ -45,7 +45,7 @@ void wakefield_get_surface_location(struct wl_client *client,
     if (!view)
         return;
 
-    weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location\n");
+    weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location: %f, %f\n", view->geometry.x, view->geometry.y);
 
     wakefield_send_surface_location(resource, surface_resource, view->geometry.x, view->geometry.y);
 }
@@ -116,6 +116,7 @@ wet_module_init(struct weston_compositor *wc, int *argc, char *argv[])
 
     wakefield->compositor = wc;
     // Log scope; add this to weston option list to subscribe: `--logger-scopes=wakefield`
+    // See https://wayland.pages.freedesktop.org/weston/toc/libweston/log.html for more info.
     wakefield->log = weston_compositor_add_log_scope(wc, "wakefield",
                                                      "wakefield plugin own actions",
                                                      NULL, NULL, NULL);
