@@ -8,27 +8,24 @@ if (NOT WAYLAND_SCANNER)
     message(FATAL_ERROR "wayland-scanner not found")
 endif ()
 
-find_program(CURL curl)
-if (NOT CURL)
-    message(FATAL_ERROR "install curl")
+find_file(XDG_SHELL_XML
+        xdg-shell.xml
+        PATHS /usr/share/wayland-protocols/stable/xdg-shell/ ${CMAKE_CURRENT_BINARY_DIR})
+
+if (NOT XDG_SHELL_XML)
+    message(FATAL_ERROR "can't find xdg-shell.xml")
 endif()
-
-
-add_custom_command(
-        OUTPUT xdg-shell.xml
-        COMMAND curl -O https://cgit.freedesktop.org/wayland/wayland-protocols/plain/stable/xdg-shell/xdg-shell.xml
-        )
 
 add_custom_command(
         OUTPUT xdg-shell-client-protocol.h
-        COMMAND ${WAYLAND_SCANNER} client-header xdg-shell.xml xdg-shell-client-protocol.h
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell.xml
+        COMMAND ${WAYLAND_SCANNER} client-header ${XDG_SHELL_XML} xdg-shell-client-protocol.h
+        DEPENDS ${XDG_SHELL_XML}
         VERBATIM)
 
 add_custom_command(
         OUTPUT xdg-shell-client-protocol.c
-        COMMAND ${WAYLAND_SCANNER} code xdg-shell.xml xdg-shell-client-protocol.c
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell.xml
+        COMMAND ${WAYLAND_SCANNER} public-code ${XDG_SHELL_XML} xdg-shell-client-protocol.c
+        DEPENDS ${XDG_SHELL_XML}
         VERBATIM)
 
 add_custom_command(

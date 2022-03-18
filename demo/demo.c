@@ -1,3 +1,5 @@
+// Based on https://wayland-book.com/xdg-shell-basics/example-code.html
+
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -199,11 +201,13 @@ static const struct wl_registry_listener wl_registry_listener = {
 
 int main(int argc, char *argv[]) {
     struct client_state state = {0};
+
     state.wl_display = wl_display_connect(NULL);
     if (!state.wl_display) {
         fprintf(stderr, "Can't open WAYLAND_DISPLAY. Shutting down.\n");
         return 1;
     }
+
     state.wl_registry = wl_display_get_registry(state.wl_display);
     wl_registry_add_listener(state.wl_registry, &wl_registry_listener, &state);
     wl_display_roundtrip(state.wl_display);
@@ -224,6 +228,7 @@ int main(int argc, char *argv[]) {
     wl_display_roundtrip(state.wl_display);
 
     wakefield_move_surface(state.wakefield, state.wl_surface, 55, 66);
+    wl_display_dispatch(state.wl_display);
     wakefield_get_surface_location(state.wakefield, state.wl_surface);
     wakefield_get_pixel_color(state.wakefield, 100, 100);
 
