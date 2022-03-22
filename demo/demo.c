@@ -1,5 +1,6 @@
 // Based on https://wayland-book.com/xdg-shell-basics/example-code.html
 
+#include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -7,7 +8,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
+
 #include <wayland-client.h>
+#include <linux/input-event-codes.h>
+
 #include "xdg-shell-client-protocol.h"
 #include "wakefield-client-protocol.h"
 
@@ -52,7 +56,27 @@ static int allocate_shm_file(size_t size) {
     return fd;
 }
 
-/* Wayland code */
+enum pointer_event_mask {
+    POINTER_EVENT_ENTER = 1 << 0,
+    POINTER_EVENT_LEAVE = 1 << 1,
+    POINTER_EVENT_MOTION = 1 << 2,
+    POINTER_EVENT_BUTTON = 1 << 3,
+    POINTER_EVENT_AXIS = 1 << 4,
+    POINTER_EVENT_AXIS_SOURCE = 1 << 5,
+    POINTER_EVENT_AXIS_STOP = 1 << 6,
+    POINTER_EVENT_AXIS_DISCRETE = 1 << 7,
+};
+
+struct pointer_event {
+    uint32_t event_mask;
+    wl_fixed_t surface_x;
+    wl_fixed_t surface_y;
+    uint32_t button;
+    uint32_t state;
+    uint32_t time;
+    uint32_t serial;
+};
+
 struct client_state {
     /* Globals */
     struct wl_display *wl_display;
@@ -61,11 +85,21 @@ struct client_state {
     struct wl_compositor *wl_compositor;
     struct xdg_wm_base *xdg_wm_base;
     struct wakefield *wakefield;
+    struct wl_seat *wl_seat;
 
     /* Objects */
     struct wl_surface *wl_surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
+    struct wl_pointer *wl_pointer;
+
+    struct pointer_event pointer_event; // evens collected here until wl_pointer_frame
+
+    int32_t surface_x; // absolute x coordinate of wl_surface from above
+    int32_t surface_y; // absolute y coordinate of wl_surface from above
+
+    int32_t mouse_x;
+    int32_t mouse_y;
 };
 
 static void
@@ -148,12 +182,122 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
         .ping = xdg_wm_base_ping,
 };
 
+static void wl_seat_name(void *data, struct wl_seat *wl_seat, const char *name) {
+    printf("INFO: seat name: %s\n", name);
+}
+
+static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+                              wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    struct client_state * const client_state = data;
+    client_state->pointer_event.event_mask |= POINTER_EVENT_MOTION;
+    client_state->pointer_event.time = time;
+    client_state->pointer_event.surface_x = surface_x;
+    client_state->pointer_event.surface_y = surface_y;
+}
+
+static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
+                              uint32_t time, uint32_t button, uint32_t state) {
+    struct client_state * const client_state = data;
+    client_state->pointer_event.event_mask |= POINTER_EVENT_BUTTON;
+    client_state->pointer_event.time = time;
+    client_state->pointer_event.serial = serial;
+    client_state->pointer_event.button = button;
+    client_state->pointer_event.state = state;
+}
+
+static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
+    struct client_state *client_state = data;
+    struct pointer_event * const event = &client_state->pointer_event;
+
+    if (event->event_mask & POINTER_EVENT_MOTION) {
+        client_state->mouse_x = wl_fixed_to_int(event->surface_x);
+        client_state->mouse_y = wl_fixed_to_int(event->surface_y);
+        printf("move local coords (%d, %d)\n", client_state->mouse_x, client_state->mouse_y);
+    }
+
+    int32_t abs_x = client_state->surface_x + client_state->mouse_x;
+    int32_t abs_y = client_state->surface_y + client_state->mouse_y;
+    printf("abs (%d, %d)\n", abs_x, abs_y);
+
+    if ((event->event_mask & POINTER_EVENT_BUTTON)
+        && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT) {
+        wakefield_get_pixel_color(client_state->wakefield, abs_x, abs_y);
+    }
+
+    if ((event->event_mask & POINTER_EVENT_BUTTON)
+        && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_RIGHT) {
+        wakefield_move_surface(client_state->wakefield, client_state->wl_surface, abs_x, abs_y);
+    }
+
+    memset(event, 0, sizeof(*event));
+}
+
+static void wl_pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer,
+                                     uint32_t axis, int32_t discrete) {
+}
+
+static void wl_pointer_axis_stop(void *data, struct wl_pointer *wl_pointer,
+                                 uint32_t time, uint32_t axis) {
+}
+
+static void wl_pointer_axis_source(void *data, struct wl_pointer *wl_pointer,
+                                   uint32_t axis_source) {
+}
+
+static void wl_pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
+                uint32_t axis, wl_fixed_t value) {
+}
+
+static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
+                 uint32_t serial, struct wl_surface *surface,
+                 wl_fixed_t surface_x, wl_fixed_t surface_y) {
+}
+
+static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
+                             uint32_t serial, struct wl_surface *surface) {
+}
+static const struct wl_pointer_listener wl_pointer_listener = {
+        .enter = wl_pointer_enter,
+        .leave = wl_pointer_leave,
+        .motion = wl_pointer_motion,
+        .button = wl_pointer_button,
+        .axis = wl_pointer_axis,
+        .frame = wl_pointer_frame,
+        .axis_source = wl_pointer_axis_source,
+        .axis_stop = wl_pointer_axis_stop,
+        .axis_discrete = wl_pointer_axis_discrete
+};
+
+static void wl_seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+    struct client_state * const state = data;
+
+    const bool have_pointer = capabilities & WL_SEAT_CAPABILITY_POINTER;
+
+    if (have_pointer && state->wl_pointer == NULL) {
+        state->wl_pointer = wl_seat_get_pointer(state->wl_seat);
+        wl_pointer_add_listener(state->wl_pointer,
+                                &wl_pointer_listener, state);
+    } else if (!have_pointer && state->wl_pointer != NULL) {
+        wl_pointer_release(state->wl_pointer);
+        state->wl_pointer = NULL;
+    }
+}
+
+static const struct wl_seat_listener wl_seat_listener = {
+        .capabilities = wl_seat_capabilities,
+        .name = wl_seat_name
+};
+
 static void wakefield_surface_location(void *data,
                          struct wakefield *wakefield,
                          struct wl_surface *surface,
                          int32_t x,
                          int32_t y,
                          int32_t error_code) {
+    struct client_state *client_state = data;
+    client_state->surface_x = x;
+    client_state->surface_y = y;
+
     if (error_code) {
         printf("surface location: ERROR, code %d\n", error_code);
     } else {
@@ -196,6 +340,9 @@ static void registry_global(void *data, struct wl_registry *wl_registry,
     } else if (strcmp(interface, wakefield_interface.name) == 0) {
         state->wakefield = wl_registry_bind(wl_registry, name, &wakefield_interface, 1);
         wakefield_add_listener(state->wakefield, &wakefield_listener, state);
+    } else if (strcmp(interface, wl_seat_interface.name) ==0) {
+        state->wl_seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, 7);
+        wl_seat_add_listener(state->wl_seat, &wl_seat_listener, state);
     }
 }
 
@@ -237,17 +384,10 @@ int main(int argc, char *argv[]) {
 
     wl_display_roundtrip(state.wl_display);
 
-    wakefield_move_surface(state.wakefield, state.wl_surface, 55, 66);
-    wl_display_dispatch(state.wl_display);
     wakefield_get_surface_location(state.wakefield, state.wl_surface);
+    wl_display_dispatch(state.wl_display);
 
-    int frame_no = 0;
     while (wl_display_dispatch(state.wl_display)) {
-        if (++frame_no == 3) {
-            wakefield_move_surface(state.wakefield, state.wl_surface, 10, 20);
-        } else if (frame_no == 6) {
-            wakefield_get_pixel_color(state.wakefield, 100, 100);
-        }
     }
 
     return 0;
