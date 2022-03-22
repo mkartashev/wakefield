@@ -152,16 +152,26 @@ static void wakefield_surface_location(void *data,
                          struct wakefield *wakefield,
                          struct wl_surface *surface,
                          int32_t x,
-                         int32_t y) {
-    printf("surface location: %d, %d\n", x, y);
+                         int32_t y,
+                         int32_t error_code) {
+    if (error_code) {
+        printf("surface location: ERROR, code %d\n", error_code);
+    } else {
+        printf("surface location: %d, %d\n", x, y);
+    }
 }
 
 static void wakefield_pixel_color(void *data,
                     struct wakefield *wakefield,
                     int32_t x,
                     int32_t y,
-                    uint32_t rgb) {
-    printf("pixel at (%d, %d) has color 0x%08x\n", x, y, rgb);
+                    uint32_t rgb,
+                    int32_t error_code) {
+    if (error_code) {
+        printf("pixel at (%d, %d): ERROR, code %d\n", x, y, error_code);
+    } else {
+        printf("pixel at (%d, %d) has color 0x%08x\n", x, y, rgb);
+    }
 }
 
 static const struct wakefield_listener wakefield_listener = {
@@ -230,10 +240,14 @@ int main(int argc, char *argv[]) {
     wakefield_move_surface(state.wakefield, state.wl_surface, 55, 66);
     wl_display_dispatch(state.wl_display);
     wakefield_get_surface_location(state.wakefield, state.wl_surface);
-    wakefield_get_pixel_color(state.wakefield, 100, 100);
 
+    int frame_no = 0;
     while (wl_display_dispatch(state.wl_display)) {
-        /* This space deliberately left blank */
+        if (++frame_no == 3) {
+            wakefield_move_surface(state.wakefield, state.wl_surface, 10, 20);
+        } else if (frame_no == 6) {
+            wakefield_get_pixel_color(state.wakefield, 100, 100);
+        }
     }
 
     return 0;

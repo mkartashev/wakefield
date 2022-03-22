@@ -1,6 +1,8 @@
 #include <weston/weston.h>
 #include <libweston/weston-log.h>
 
+#include <pixman.h>
+
 #include "wakefield-server-protocol.h"
 
 #ifndef container_of
@@ -16,45 +18,70 @@ struct wakefield {
     struct weston_log_scope *log;
 };
 
-static
-void wakefield_get_pixel_color(struct wl_client *client,
-                               struct wl_resource *resource,
-                               int32_t x,
-                               int32_t y)
+static void
+wakefield_get_pixel_color(struct wl_client *client,
+                          struct wl_resource *resource,
+                          int32_t x,
+                          int32_t y)
 {
     struct wakefield *wakefield = wl_resource_get_user_data(resource);
+    struct weston_compositor *compositor = wakefield->compositor;
 
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_pixel_color at (%d, %d)\n", x, y);
 
-    struct weston_compositor *compositor = wakefield->compositor;
-    int byte_per_pixel = (PIXMAN_FORMAT_BPP(compositor->read_format) / 8);
-    if (byte_per_pixel > 4) {
-        // TODO: send an error
+    const unsigned int byte_per_pixel = (PIXMAN_FORMAT_BPP(compositor->read_format) / 8);
+    uint32_t pixel = 0;
+    if (byte_per_pixel > sizeof(pixel)) {
+        weston_log_scope_printf(wakefield->log,
+                                "WAKEFIELD: compositor pixel format (%d) exceeds allocated storage (%d > %ld)\n",
+                                compositor->read_format,
+                                byte_per_pixel,
+                                sizeof(pixel));
+        wakefield_send_pixel_color(resource, x, y, 0, WAKEFIELD_ERROR_FORMAT);
         return;
     }
 
-    wl_fixed_t xf = wl_fixed_from_int(x);
-    wl_fixed_t yf = wl_fixed_from_int(y);
+    const wl_fixed_t xf = wl_fixed_from_int(x);
+    const wl_fixed_t yf = wl_fixed_from_int(y);
     wl_fixed_t view_xf;
     wl_fixed_t view_yf;
     struct weston_view *view = weston_compositor_pick_view(compositor, xf, yf, &view_xf, &view_yf);
+    if (view == NULL) {
+        weston_log_scope_printf(wakefield->log,
+                                "WAKEFIELD: pixel location (%d, %d) doesn't map to any view\n", x, y);
+        wakefield_send_pixel_color(resource, x, y, 0, WAKEFIELD_ERROR_INVALID_COORDINATES);
+        return;
+    }
+
     struct weston_output *output = view->output;
-    uint32_t pixel = 0;
     compositor->renderer->read_pixels(output,
                                       compositor->read_format, &pixel,
                                       x, y, 1, 1);
 
-    // TODO: convert to rgb from read_format somehow
-    const uint32_t rgb = pixel;
+    uint32_t rgb = 0;
+    switch (compositor->read_format) {
+        case PIXMAN_a8r8g8b8:
+        case PIXMAN_x8r8g8b8:
+        case PIXMAN_r8g8b8:
+            rgb = pixel & 0x00ffffffu;
+            break;
+
+        default:
+            weston_log_scope_printf(wakefield->log,
+                                    "WAKEFIELD: compositor pixel format %d (see pixman.h) not supported\n",
+                                    compositor->read_format);
+            wakefield_send_pixel_color(resource, x, y, 0, WAKEFIELD_ERROR_FORMAT);
+            return;
+    }
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: color is 0x%08x\n", rgb);
 
-    wakefield_send_pixel_color(resource, x, y, rgb);
+    wakefield_send_pixel_color(resource, x, y, rgb, WAKEFIELD_ERROR_NO_ERROR);
 }
 
-static
-void wakefield_get_surface_location(struct wl_client *client,
-                                    struct wl_resource *resource,
-                                    struct wl_resource *surface_resource)
+static void
+wakefield_get_surface_location(struct wl_client *client,
+                               struct wl_resource *resource,
+                               struct wl_resource *surface_resource)
 {
     // See also weston-test.c`move_surface() and the corresponding protocol
 
@@ -62,29 +89,38 @@ void wakefield_get_surface_location(struct wl_client *client,
     struct weston_surface *surface = wl_resource_get_user_data(surface_resource);
     struct weston_view *view = container_of(surface->views.next, struct weston_view, surface_link);
 
-    if (!view)
+    if (!view) {
+        weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location error\n");
+        wakefield_send_surface_location(resource, surface_resource, 0, 0,
+                                        WAKEFIELD_ERROR_INTERNAL);
         return;
+    }
 
-    weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location: %f, %f\n", view->geometry.x, view->geometry.y);
+    const int32_t x = view->geometry.x;
+    const int32_t y = view->geometry.y;
+    weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location: %d, %d\n", x, y);
 
-    wakefield_send_surface_location(resource, surface_resource, view->geometry.x, view->geometry.y);
+    wakefield_send_surface_location(resource, surface_resource, x, y,
+                                    WAKEFIELD_ERROR_NO_ERROR);
 }
 
-static
-void wakefield_move_surface(struct wl_client *client,
-                            struct wl_resource *resource,
-                            struct wl_resource *surface_resource,
-                            int32_t x,
-                            int32_t y)
+static void
+wakefield_move_surface(struct wl_client *client,
+                       struct wl_resource *resource,
+                       struct wl_resource *surface_resource,
+                       int32_t x,
+                       int32_t y)
 {
     struct wakefield *wakefield = wl_resource_get_user_data(resource);
     struct weston_surface *surface = wl_resource_get_user_data(surface_resource);
     struct weston_view *view = container_of(surface->views.next, struct weston_view, surface_link);
 
-    if (!view)
+    if (!view) {
+        weston_log_scope_printf(wakefield->log, "WAKEFIELD: move_surface error\n");
         return;
+    }
 
-    weston_view_set_position(view, x, y);
+    weston_view_set_position(view, (float)x, (float)y);
     weston_view_update_transform(view);
 
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: move_surface to (%d, %d)\n", x, y);
@@ -102,8 +138,9 @@ wakefield_bind(struct wl_client *client, void *data, uint32_t version, uint32_t 
     struct wakefield *wakefield = data;
 
     struct wl_resource *resource = wl_resource_create(client, &wakefield_interface, 1, id);
-    if (resource)
+    if (resource) {
         wl_resource_set_implementation(resource, &wakefield_implementation, wakefield, NULL);
+    }
 
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: bind\n");
 }
