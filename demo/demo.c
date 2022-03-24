@@ -1,6 +1,7 @@
 // Based on https://wayland-book.com/xdg-shell-basics/example-code.html
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -88,6 +89,15 @@ struct client_state {
     struct wl_seat *wl_seat;
 
     /* Objects */
+    struct wl_buffer *buffer_main;
+    uint32_t *buffer_main_data;
+
+    struct wl_buffer *buffer_cursor;
+    uint32_t *buffer_cursor_data;
+
+    struct wl_buffer *buffer_screenshot;
+    uint32_t *buffer_screenshot_data;
+
     struct wl_surface *wl_surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
@@ -100,11 +110,14 @@ struct client_state {
 
     int32_t mouse_x;
     int32_t mouse_y;
+
+    struct wl_surface *cursor_surface;
 };
 
 static void
 wl_buffer_release(void *data, struct wl_buffer *wl_buffer) {
     /* Sent by the compositor when it's no longer using this buffer */
+    printf("wl_buffer_release(%p)\n", wl_buffer);
     wl_buffer_destroy(wl_buffer);
 }
 
@@ -132,41 +145,66 @@ static void paint_to(uint32_t *data, int width, int height) {
     }
 }
 
-static struct wl_buffer *draw_frame(struct client_state *state) {
+static void paint_cursor_to(uint32_t *data, int width, int height) {
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            uint32_t color = 0x60ffffff;
+            if (y == height / 2 || x == width / 2) {
+                color = 0x00000000;
+            }
+            data[y * width + x] = color;
+        }
+    }
+}
+
+static void create_buffers(struct client_state *state) {
     const int width = 640, height = 480;
-    int stride = width * 4;
-    int size = stride * height;
+    const int stride = width * 4;
+    const int nbuffers = 3;
+    const int buffer_size = stride * height;
+    const int size = nbuffers * buffer_size;
 
     int fd = allocate_shm_file(size);
     if (fd == -1) {
-        return NULL;
+        abort();
     }
 
     uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (data == MAP_FAILED) {
         close(fd);
-        return NULL;
+        abort();
     }
 
+    state->buffer_main_data       = data + width*height*0;
+    state->buffer_cursor_data     = data + width*height*1;
+    state->buffer_screenshot_data = data + width*height*2;
+
     struct wl_shm_pool *pool = wl_shm_create_pool(state->wl_shm, fd, size);
-    struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0,
+    state->buffer_main = wl_shm_pool_create_buffer(pool, 0 * buffer_size,
                                                          width, height, stride, WL_SHM_FORMAT_XRGB8888);
-    wl_shm_pool_destroy(pool);
+    state->buffer_cursor = wl_shm_pool_create_buffer(pool, 1 * buffer_size,
+                                                   20, 20, 20*4, WL_SHM_FORMAT_ARGB8888);
+    state->buffer_screenshot = wl_shm_pool_create_buffer(pool, 2 * buffer_size,
+                                                     width, height, stride, WL_SHM_FORMAT_XRGB8888);
+    wl_shm_pool_destroy(pool); // buffers keep references to the pool, can "destroy" now
     close(fd);
 
-    paint_to(data, width, height);
-    munmap(data, size);
-    wl_buffer_add_listener(buffer, &wl_buffer_listener, NULL);
-    return buffer;
+    //munmap(data, size); // can't unmap as we need to write to this memory on our side yet
+
+    wl_buffer_add_listener(state->buffer_main, &wl_buffer_listener, NULL);
+    wl_buffer_add_listener(state->buffer_cursor, &wl_buffer_listener, NULL);
+    wl_buffer_add_listener(state->buffer_screenshot, &wl_buffer_listener, NULL);
 }
 
 static void xdg_surface_configure(void *data,
-                                  struct xdg_surface *xdg_surface, uint32_t serial) {
+                                  struct xdg_surface *xdg_surface, uint32_t serial)
+{
     struct client_state *state = data;
     xdg_surface_ack_configure(xdg_surface, serial);
 
-    struct wl_buffer *buffer = draw_frame(state);
-    wl_surface_attach(state->wl_surface, buffer, 0, 0);
+    wl_surface_attach(state->wl_surface, state->buffer_main, 0, 0);
+    printf("main buffer: %p\n", state->buffer_main);
+
     wl_surface_commit(state->wl_surface);
 }
 
@@ -193,6 +231,12 @@ static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_
     client_state->pointer_event.time = time;
     client_state->pointer_event.surface_x = surface_x;
     client_state->pointer_event.surface_y = surface_y;
+
+    // This helps to remove traces of the mouse cursor on the surface.
+    const int32_t x = wl_fixed_to_int(surface_x);
+    const int32_t y = wl_fixed_to_int(surface_y);
+    wl_surface_damage(client_state->wl_surface, x, y, 20, 20);
+    wl_surface_commit(client_state->wl_surface);
 }
 
 static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
@@ -212,12 +256,12 @@ static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
     if (event->event_mask & POINTER_EVENT_MOTION) {
         client_state->mouse_x = wl_fixed_to_int(event->surface_x);
         client_state->mouse_y = wl_fixed_to_int(event->surface_y);
-        printf("move local coords (%d, %d)\n", client_state->mouse_x, client_state->mouse_y);
+        //printf("move local coords (%d, %d)\n", client_state->mouse_x, client_state->mouse_y);
     }
 
     int32_t abs_x = client_state->surface_x + client_state->mouse_x;
     int32_t abs_y = client_state->surface_y + client_state->mouse_y;
-    printf("abs (%d, %d)\n", abs_x, abs_y);
+    //printf("abs (%d, %d)\n", abs_x, abs_y);
 
     if ((event->event_mask & POINTER_EVENT_BUTTON)
         && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT) {
@@ -251,10 +295,17 @@ static void wl_pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t 
 static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
                  uint32_t serial, struct wl_surface *surface,
                  wl_fixed_t surface_x, wl_fixed_t surface_y) {
+    printf("pointer enter %d\n", serial);
+    struct client_state *state = data;
+    wl_pointer_set_cursor(wl_pointer, serial, state->cursor_surface, 10, 10);
+    wl_surface_attach(state->cursor_surface, state->buffer_cursor, 0, 0);
+    //wl_surface_damage(state->cursor_surface, 0, 0, 20, 20); // seems no need...
+    wl_surface_commit(state->cursor_surface); // ???
 }
 
 static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
                              uint32_t serial, struct wl_surface *surface) {
+    //wl_pointer_set_cursor(wl_pointer, serial, NULL, 0, 0);
 }
 static const struct wl_pointer_listener wl_pointer_listener = {
         .enter = wl_pointer_enter,
@@ -374,6 +425,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    create_buffers(&state);
+    paint_to(state.buffer_main_data, 640, 480);
+
+    paint_cursor_to(state.buffer_cursor_data, 20, 20);
+    state.cursor_surface = wl_compositor_create_surface(state.wl_compositor);
+    if (state.cursor_surface == NULL) {
+        printf("ERROR: failed to allocate surface for cursor\n");
+        return 1;
+    }
+
+
     state.wl_surface = wl_compositor_create_surface(state.wl_compositor);
     state.xdg_surface = xdg_wm_base_get_xdg_surface(
             state.xdg_wm_base, state.wl_surface);
@@ -387,7 +449,10 @@ int main(int argc, char *argv[]) {
     wakefield_get_surface_location(state.wakefield, state.wl_surface);
     wl_display_dispatch(state.wl_display);
 
-    while (wl_display_dispatch(state.wl_display)) {
+    while (true) {
+        if (wl_display_dispatch(state.wl_display) < 0) {
+            return 1;
+        }
     }
 
     return 0;
