@@ -9,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <cairo/cairo.h>
 
 #include <wayland-client.h>
 #include <linux/input-event-codes.h>
@@ -271,6 +272,16 @@ static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
     if ((event->event_mask & POINTER_EVENT_BUTTON)
         && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_RIGHT) {
         wakefield_move_surface(client_state->wakefield, client_state->wl_surface, abs_x, abs_y);
+
+        // Now need to update the actual location after the move.
+        wakefield_get_surface_location(client_state->wakefield, client_state->wl_surface);
+    }
+
+    if ((event->event_mask & POINTER_EVENT_BUTTON)
+        && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_MIDDLE) {
+        printf("Creating image capture for buffer %p\n", client_state->buffer_screenshot);
+        wakefield_capture_create(client_state->wakefield, client_state->buffer_screenshot,
+                                 client_state->surface_x, client_state->surface_y);
     }
 
     memset(event, 0, sizeof(*event));
@@ -344,7 +355,7 @@ static void wakefield_surface_location(void *data,
                          struct wl_surface *surface,
                          int32_t x,
                          int32_t y,
-                         int32_t error_code) {
+                         uint32_t error_code) {
     struct client_state *client_state = data;
     client_state->surface_x = x;
     client_state->surface_y = y;
@@ -361,7 +372,7 @@ static void wakefield_pixel_color(void *data,
                     int32_t x,
                     int32_t y,
                     uint32_t rgb,
-                    int32_t error_code) {
+                    uint32_t error_code) {
     if (error_code) {
         printf("pixel at (%d, %d): ERROR, code %d\n", x, y, error_code);
     } else {
@@ -369,9 +380,33 @@ static void wakefield_pixel_color(void *data,
     }
 }
 
+static void wakefield_capture_ready(void *data,
+                                    struct wakefield *wakefield,
+                                    struct wl_buffer *buffer,
+                                    uint32_t error_code) {
+    struct client_state *client_state = data;
+
+    if (error_code) {
+        printf("capture failed with error %d\n", error_code);
+        return;
+    }
+
+    printf("capture of %p successful\n", buffer);
+
+    cairo_surface_t *surface = cairo_image_surface_create_for_data((unsigned char*)client_state->buffer_screenshot_data,
+                                                  CAIRO_FORMAT_ARGB32,
+                                                  640,
+                                                  480,
+                                                  4*640);
+
+    cairo_surface_write_to_png(surface, "screenshot.png");
+    cairo_surface_destroy(surface);
+}
+
 static const struct wakefield_listener wakefield_listener = {
         .surface_location = wakefield_surface_location,
-        .pixel_color = wakefield_pixel_color
+        .pixel_color = wakefield_pixel_color,
+        .capture_ready = wakefield_capture_ready
 };
 
 static void registry_global(void *data, struct wl_registry *wl_registry,
@@ -407,14 +442,23 @@ static const struct wl_registry_listener wl_registry_listener = {
         .global_remove = registry_global_remove,
 };
 
+static void
+show_usage_info(void) {
+    printf("INFO left click: pick the color under the cursor\n");
+    printf("INFO right click: move the window to a new location\n");
+    printf("INFO middle click: create image capture\n");
+}
+
 int main(int argc, char *argv[]) {
     struct client_state state = {0};
 
     state.wl_display = wl_display_connect(NULL);
     if (!state.wl_display) {
-        fprintf(stderr, "Can't open WAYLAND_DISPLAY. Shutting down.\n");
+        fprintf(stderr, "Can't open WAYLAND_DISPLAY. Run with WAYLAND_DISPLAY=wayland-42. Shutting down.\n");
         return 1;
     }
+
+    show_usage_info();
 
     state.wl_registry = wl_display_get_registry(state.wl_display);
     wl_registry_add_listener(state.wl_registry, &wl_registry_listener, &state);
@@ -434,7 +478,6 @@ int main(int argc, char *argv[]) {
         printf("ERROR: failed to allocate surface for cursor\n");
         return 1;
     }
-
 
     state.wl_surface = wl_compositor_create_surface(state.wl_compositor);
     state.xdg_surface = xdg_wm_base_get_xdg_surface(

@@ -1,6 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <protocol name="wakefield">
     <interface name="wakefield" version="1">
         <description summary="provides capabilities necessary to for java.awt.Robot and such"></description>
+
+        <request name="destroy" type="destructor">
+        </request>
 
         <request name="move_surface">
             <description summary="facilitates implementation of Frame.setLocation()">
@@ -30,7 +34,7 @@
             <arg name="surface" type="object" interface="wl_surface"/>
             <arg name="x" type="int"/>
             <arg name="y" type="int"/>
-            <arg name="error_code" type="int"/>
+            <arg name="error_code" type="uint" enum="error"/>
         </event>
 
         <request name="get_pixel_color">
@@ -52,7 +56,7 @@
             <arg name="x" type="int"/>
             <arg name="y" type="int"/>
             <arg name="rgb" type="uint"/>
-            <arg name="error_code" type="int"/>
+            <arg name="error_code" type="uint" enum="error"/>
         </event>
 
         <enum name="error">
@@ -64,5 +68,19 @@
             <entry name="format" value="4" summary="(temporary?) color cannot be converted to RGB format"/>
         </enum>
 
+        <request name="capture_create">
+            <arg name="buffer" type="object" interface="wl_buffer" summary="shall be an instance by the wl_shm factory"/>
+            <arg name="x" type="int"/>
+            <arg name="y" type="int"/>
+            <!--
+            <arg name="capture_pointer" type="int" summary="0 to exclude the mouse pointer surface from the capture"/>
+            -->
+        </request>
+
+        <event name="capture_ready">
+            <arg name="buffer" type="object" interface="wl_buffer"/>
+            <arg name="error_code" type="uint" enum="error"/>
+        </event>
     </interface>
+
 </protocol>

@@ -2,6 +2,7 @@
 #include <libweston/weston-log.h>
 
 #include <pixman.h>
+#include <assert.h>
 
 #include "wakefield-server-protocol.h"
 
@@ -126,10 +127,90 @@ wakefield_move_surface(struct wl_client *client,
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: move_surface to (%d, %d)\n", x, y);
 }
 
+static pixman_format_code_t
+wl_shm_format_to_pixman(uint32_t wl_shm_format)
+{
+    pixman_format_code_t rc;
+
+    switch (wl_shm_format) {
+        case WL_SHM_FORMAT_ARGB8888:
+            rc = PIXMAN_a8r8g8b8;
+            break;
+        case WL_SHM_FORMAT_XRGB8888:
+            rc = PIXMAN_x8r8g8b8;
+            break;
+        default:
+            assert(false);
+    }
+
+    return rc;
+}
+static void
+wakefield_capture_create(struct wl_client *client,
+                         struct wl_resource *resource,
+                         struct wl_resource *buffer_resource,
+                         int32_t x,
+                         int32_t y)
+{
+    struct wakefield *wakefield = wl_resource_get_user_data(resource);
+    struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(buffer_resource);
+
+    if (!shm_buffer) {
+        weston_log_scope_printf(wakefield->log, "WAKEFIELD: buffer for image capture not from wl_shm\n");
+        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_INTERNAL);
+        return;
+    }
+
+    const uint32_t buffer_format = wl_shm_buffer_get_format(shm_buffer);
+    if (buffer_format != WL_SHM_FORMAT_ARGB8888
+        && buffer_format != WL_SHM_FORMAT_XRGB8888) {
+        weston_log_scope_printf(wakefield->log,
+                                "WAKEFIELD: buffer for image capture has unsupported format %d, "
+                                "check codes in enum 'format' in wayland.xml\n",
+                                buffer_format);
+        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_FORMAT);
+        return;
+    }
+
+    const wl_fixed_t xf = wl_fixed_from_int(x);
+    const wl_fixed_t yf = wl_fixed_from_int(y);
+    wl_fixed_t view_xf;
+    wl_fixed_t view_yf;
+    struct weston_view *view = weston_compositor_pick_view(wakefield->compositor, xf, yf, &view_xf, &view_yf);
+    if (view == NULL) {
+        weston_log_scope_printf(wakefield->log,
+                                "WAKEFIELD: capture location (%d, %d) doesn't map to any view\n", x, y);
+        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_INVALID_COORDINATES);
+        return;
+    }
+
+    pixman_format_code_t buffer_format_pixman = wl_shm_format_to_pixman(buffer_format);
+    const int32_t width = wl_shm_buffer_get_width(shm_buffer);
+    const int32_t height = wl_shm_buffer_get_height(shm_buffer);
+    weston_log_scope_printf(wakefield->log,
+                            "WAKEFIELD: about to send screen capture at (%d, %d) of size %dx%d, format %s\n",
+                            x, y,
+                            width, height,
+                            buffer_format_pixman == PIXMAN_a8r8g8b8 ? "ARGB8888" : "XRGB8888");
+
+    wl_shm_buffer_begin_access(shm_buffer);
+    {
+        uint32_t *data = wl_shm_buffer_get_data(shm_buffer);
+        wakefield->compositor->renderer->read_pixels(view->output,
+                                                     buffer_format_pixman, // TODO: may not work with all renderers, check screenshooter_frame_notify() in libweston
+                                                     data,
+                                                     x, y, width, height);
+    }
+    wl_shm_buffer_end_access(shm_buffer);
+
+    wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_NO_ERROR);
+}
+
 static const struct wakefield_interface wakefield_implementation = {
         .get_surface_location = wakefield_get_surface_location,
         .move_surface = wakefield_move_surface,
-        .get_pixel_color = wakefield_get_pixel_color
+        .get_pixel_color = wakefield_get_pixel_color,
+        .capture_create = wakefield_capture_create
 };
 
 static void

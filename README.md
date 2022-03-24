@@ -14,7 +14,8 @@ test environment *only*.
 On Ubuntu 21.04 (in addition to the usual C development environment):
 ```bash
 $ sudo apt install cmake libwayland-dev wayland-protocols \
-   libweston-9-0 libweston-9-dev weston libpixman-1-dev libpixman-1-0
+   libweston-9-0 libweston-9-dev weston libpixman-1-dev libpixman-1-0 \
+   libcairo-dev
 ```
 
 ## Build

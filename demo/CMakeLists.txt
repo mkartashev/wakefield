@@ -45,5 +45,5 @@ find_library(WAYLAND_CLIENT wayland-client)
 add_executable(wakefield-demo demo.c xdg-shell-client-protocol.h xdg-shell-client-protocol.c
         wakefield-client-protocol.h wakefield-client-protocol.c)
 target_include_directories(wakefield-demo PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(wakefield-demo PRIVATE ${WAYLAND_CLIENT} rt)
+target_link_libraries(wakefield-demo PRIVATE ${WAYLAND_CLIENT} rt cairo)
 
