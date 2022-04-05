@@ -1,7 +1,7 @@
 PWD=`pwd`
 LOGGING="--logger-scopes=wakefield --log=log.txt"
-weston -B wayland-backend.so --socket=wayland-test \
-    --width=800 --height=600 --use-pixman \
-    --socket=wayland-42 \
+weston --socket=wayland-42 \
+    --output-count=2 \
+    --width=500 --height=700 --use-pixman \
     $LOGGING \
     --modules="$PWD/libwakefield.so"

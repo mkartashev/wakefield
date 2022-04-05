@@ -175,6 +175,46 @@ wakefield_capture_create(struct wl_client *client,
         return;
     }
 
+    const int32_t width = wl_shm_buffer_get_width(shm_buffer);
+    const int32_t height = wl_shm_buffer_get_height(shm_buffer);
+    {
+        struct weston_output *output;
+        pixman_region32_t region;
+        pixman_region32_t region_in_output;
+
+        pixman_region32_init_rect(&region, x, y, width, height);
+        pixman_region32_init(&region_in_output);
+
+        wl_list_for_each(output, &wakefield->compositor->output_list, link) {
+            if (output->destroying)
+                continue;
+
+            pixman_region32_intersect(&region_in_output, &region, &output->region);
+            if (pixman_region32_not_empty(&region_in_output)) {
+                pixman_box32_t *e = pixman_region32_extents(&region_in_output);
+                const int32_t width_in_output = e->x2 - e->x1;
+                const int32_t height_in_output = e->y2 - e->y1;
+                weston_log_scope_printf(wakefield->log, "WAKEFIELD: output '%s' has a chunk of the image from (%d, %d, %d, %d)\n",
+                                        output->name,
+                                        e->x1, e->y1,
+                                        width_in_output, height_in_output);
+
+                // Better, but not available in current libweston:
+                // weston_output_region_from_global(output, &region_in_output);
+
+                // Now convert region_in_output from global to output-local coordinates.
+                pixman_region32_translate(&region_in_output, -output->x, -output->y);
+
+                e = pixman_region32_extents(&region_in_output);
+                weston_log_scope_printf(wakefield->log, "WAKEFIELD: ... and in output-local coordinates: (%d, %d)\n",
+                                        e->x1, e->y1);
+            }
+        }
+
+        pixman_region32_fini(&region_in_output);
+        pixman_region32_fini(&region);
+    }
+
     const wl_fixed_t xf = wl_fixed_from_int(x);
     const wl_fixed_t yf = wl_fixed_from_int(y);
     wl_fixed_t view_xf;
@@ -188,8 +228,6 @@ wakefield_capture_create(struct wl_client *client,
     }
 
     pixman_format_code_t buffer_format_pixman = wl_shm_format_to_pixman(buffer_format);
-    const int32_t width = wl_shm_buffer_get_width(shm_buffer);
-    const int32_t height = wl_shm_buffer_get_height(shm_buffer);
     weston_log_scope_printf(wakefield->log,
                             "WAKEFIELD: about to send screen capture at (%d, %d) of size %dx%d, format %s\n",
                             x, y,

@@ -489,6 +489,7 @@ int main(int argc, char *argv[]) {
 
     wl_display_roundtrip(state.wl_display);
 
+    wakefield_move_surface(state.wakefield, state.wl_surface, 10, 20);
     wakefield_get_surface_location(state.wakefield, state.wl_surface);
     wl_display_dispatch(state.wl_display);
 
