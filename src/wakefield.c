@@ -97,8 +97,11 @@ wakefield_get_surface_location(struct wl_client *client,
         return;
     }
 
-    const int32_t x = view->geometry.x;
-    const int32_t y = view->geometry.y;
+    float fx;
+    float fy;
+    weston_view_to_global_float(view, 0, 0, &fx, &fy);
+    const int32_t x = (int32_t)fx;
+    const int32_t y = (int32_t)fy;
     weston_log_scope_printf(wakefield->log, "WAKEFIELD: get_location: %d, %d\n", x, y);
 
     wakefield_send_surface_location(resource, surface_resource, x, y,
