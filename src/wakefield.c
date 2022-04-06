@@ -3,6 +3,7 @@
 
 #include <pixman.h>
 #include <assert.h>
+#include <string.h>
 
 #include "wakefield-server-protocol.h"
 
@@ -148,6 +149,84 @@ wl_shm_format_to_pixman(uint32_t wl_shm_format)
 
     return rc;
 }
+
+static uint64_t
+area_in_pixels(pixman_region32_t *region)
+{
+    pixman_box32_t *e = pixman_region32_extents(region);
+    assert (e->x2 >= e->x1);
+    assert (e->y2 >= e->y1);
+
+    return ((uint64_t)(e->x2 - e->x1))*(e->y2 - e->y1);
+}
+
+static uint64_t
+get_largest_area_in_one_output(struct weston_compositor *compositor, pixman_region32_t *region)
+{
+    uint64_t area = 0; // in pixels
+
+    pixman_region32_t region_in_output;
+    pixman_region32_init(&region_in_output);
+
+    struct weston_output *output;
+    wl_list_for_each(output, &compositor->output_list, link) {
+        if (output->destroying)
+            continue;
+
+        pixman_region32_intersect(&region_in_output, region, &output->region);
+        if (pixman_region32_not_empty(&region_in_output)) {
+            const uint64_t this_area = area_in_pixels(&region_in_output);
+            if (this_area > area) {
+                area = this_area;
+            }
+        }
+    }
+
+    pixman_region32_fini(&region_in_output);
+
+    return area;
+}
+
+static void
+clear_buffer(struct wl_shm_buffer *buffer)
+{
+    const int32_t  width            = wl_shm_buffer_get_width(buffer);
+    const int32_t  height           = wl_shm_buffer_get_height(buffer);
+    const size_t   bpp              = 4;
+    const size_t   buffer_byte_size = width*height*bpp;
+
+    wl_shm_buffer_begin_access(buffer);
+    {
+        uint32_t *data = wl_shm_buffer_get_data(buffer);
+        memset(data, 0, buffer_byte_size);
+    }
+    wl_shm_buffer_end_access(buffer);
+}
+
+static void
+copy_pixels_to_shm_buffer(struct wl_shm_buffer *buffer, uint32_t *data, int32_t target_x, int32_t target_y, int32_t width, int32_t height)
+{
+    assert (target_x >= 0 && target_y >= 0);
+    assert (data);
+
+    const int32_t buffer_width = wl_shm_buffer_get_width(buffer);
+
+    wl_shm_buffer_begin_access(buffer);
+    {
+        uint32_t * const buffer_data = wl_shm_buffer_get_data(buffer);
+        assert (buffer_data);
+
+        for (int32_t y = 0; y < height; y++) {
+            uint32_t * const src_line = &data[y*width];
+            uint32_t * const dst_line = &buffer_data[(target_y + y)*buffer_width];
+            for (int32_t x = 0; x < width; x++) {
+                dst_line[target_x + x] = src_line[x];
+            }
+        }
+    }
+    wl_shm_buffer_end_access(buffer);
+}
+
 static void
 wakefield_capture_create(struct wl_client *client,
                          struct wl_resource *resource,
@@ -156,15 +235,15 @@ wakefield_capture_create(struct wl_client *client,
                          int32_t y)
 {
     struct wakefield *wakefield = wl_resource_get_user_data(resource);
-    struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get(buffer_resource);
+    struct wl_shm_buffer *buffer = wl_shm_buffer_get(buffer_resource);
 
-    if (!shm_buffer) {
+    if (!buffer) {
         weston_log_scope_printf(wakefield->log, "WAKEFIELD: buffer for image capture not from wl_shm\n");
         wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_INTERNAL);
         return;
     }
 
-    const uint32_t buffer_format = wl_shm_buffer_get_format(shm_buffer);
+    const uint32_t buffer_format = wl_shm_buffer_get_format(buffer);
     if (buffer_format != WL_SHM_FORMAT_ARGB8888
         && buffer_format != WL_SHM_FORMAT_XRGB8888) {
         weston_log_scope_printf(wakefield->log,
@@ -175,74 +254,89 @@ wakefield_capture_create(struct wl_client *client,
         return;
     }
 
-    const int32_t width = wl_shm_buffer_get_width(shm_buffer);
-    const int32_t height = wl_shm_buffer_get_height(shm_buffer);
-    {
-        struct weston_output *output;
-        pixman_region32_t region;
-        pixman_region32_t region_in_output;
+    clear_buffer(buffer); // in case some outputs disappear mid-flight
 
-        pixman_region32_init_rect(&region, x, y, width, height);
-        pixman_region32_init(&region_in_output);
+    const int32_t width  = wl_shm_buffer_get_width(buffer);
+    const int32_t height = wl_shm_buffer_get_height(buffer);
 
-        wl_list_for_each(output, &wakefield->compositor->output_list, link) {
-            if (output->destroying)
-                continue;
+    pixman_region32_t region_global;
+    pixman_region32_t region_in_output;
 
-            pixman_region32_intersect(&region_in_output, &region, &output->region);
-            if (pixman_region32_not_empty(&region_in_output)) {
-                pixman_box32_t *e = pixman_region32_extents(&region_in_output);
-                const int32_t width_in_output = e->x2 - e->x1;
-                const int32_t height_in_output = e->y2 - e->y1;
-                weston_log_scope_printf(wakefield->log, "WAKEFIELD: output '%s' has a chunk of the image from (%d, %d, %d, %d)\n",
-                                        output->name,
-                                        e->x1, e->y1,
-                                        width_in_output, height_in_output);
+    pixman_region32_init_rect(&region_global, x, y, width, height);
+    pixman_region32_init(&region_in_output);
 
-                // Better, but not available in current libweston:
-                // weston_output_region_from_global(output, &region_in_output);
-
-                // Now convert region_in_output from global to output-local coordinates.
-                pixman_region32_translate(&region_in_output, -output->x, -output->y);
-
-                e = pixman_region32_extents(&region_in_output);
-                weston_log_scope_printf(wakefield->log, "WAKEFIELD: ... and in output-local coordinates: (%d, %d)\n",
-                                        e->x1, e->y1);
-            }
-        }
-
-        pixman_region32_fini(&region_in_output);
-        pixman_region32_fini(&region);
-    }
-
-    const wl_fixed_t xf = wl_fixed_from_int(x);
-    const wl_fixed_t yf = wl_fixed_from_int(y);
-    wl_fixed_t view_xf;
-    wl_fixed_t view_yf;
-    struct weston_view *view = weston_compositor_pick_view(wakefield->compositor, xf, yf, &view_xf, &view_yf);
-    if (view == NULL) {
+    const uint64_t largest_capture_area = get_largest_area_in_one_output(wakefield->compositor, &region_global);
+    if (largest_capture_area == 0) {
+        // All outputs might've just disappeared
         weston_log_scope_printf(wakefield->log,
-                                "WAKEFIELD: capture location (%d, %d) doesn't map to any view\n", x, y);
-        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_INVALID_COORDINATES);
+                                "WAKEFIELD: captured area size on all outputs is zero.\n");
+        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_NO_ERROR);
         return;
     }
 
-    pixman_format_code_t buffer_format_pixman = wl_shm_format_to_pixman(buffer_format);
-    weston_log_scope_printf(wakefield->log,
-                            "WAKEFIELD: about to send screen capture at (%d, %d) of size %dx%d, format %s\n",
-                            x, y,
-                            width, height,
-                            buffer_format_pixman == PIXMAN_a8r8g8b8 ? "ARGB8888" : "XRGB8888");
-
-    wl_shm_buffer_begin_access(shm_buffer);
-    {
-        uint32_t *data = wl_shm_buffer_get_data(shm_buffer);
-        wakefield->compositor->renderer->read_pixels(view->output,
-                                                     buffer_format_pixman, // TODO: may not work with all renderers, check screenshooter_frame_notify() in libweston
-                                                     data,
-                                                     x, y, width, height);
+    // TODO: bypass this if fits on one output entirely
+    const size_t bpp = 4; // byte-per-pixel
+    void *per_output_buffer = malloc(largest_capture_area*bpp);
+    if (per_output_buffer == NULL) {
+        weston_log_scope_printf(wakefield->log,
+                                "WAKEFIELD: failed to allocate %ld bytes for temporary capture buffer.\n", largest_capture_area);
+        wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_OUT_OF_MEMORY);
+        return;
     }
-    wl_shm_buffer_end_access(shm_buffer);
+
+    const pixman_format_code_t buffer_format_pixman = wl_shm_format_to_pixman(buffer_format);
+    struct weston_output *output;
+    wl_list_for_each(output, &wakefield->compositor->output_list, link) {
+        if (output->destroying)
+            continue;
+
+        pixman_region32_intersect(&region_in_output, &region_global, &output->region);
+        if (pixman_region32_not_empty(&region_in_output)) {
+            pixman_box32_t *e = pixman_region32_extents(&region_in_output);
+
+            const int32_t region_x_in_global = e->x1;
+            const int32_t region_y_in_global = e->y1;
+            const int32_t width_in_output    = e->x2 - e->x1;
+            const int32_t height_in_output   = e->y2 - e->y1;
+            weston_log_scope_printf(wakefield->log, "WAKEFIELD: output '%s' has a chunk of the image at (%d, %d) sized (%d, %d)\n",
+                                    output->name,
+                                    e->x1, e->y1,
+                                    width_in_output, height_in_output);
+
+            // Better, but not available in the current libweston:
+            // weston_output_region_from_global(output, &region_in_output);
+
+            // Now convert region_in_output from global to output-local coordinates.
+            pixman_region32_translate(&region_in_output, -output->x, -output->y);
+
+            pixman_box32_t *e_in_output = pixman_region32_extents(&region_in_output);
+            const int32_t x_in_output = e_in_output->x1;
+            const int32_t y_in_output = e_in_output->y1;
+            weston_log_scope_printf(wakefield->log, "WAKEFIELD: ... and in output-local coordinates: (%d, %d)\n",
+                                    x_in_output, y_in_output);
+
+            weston_log_scope_printf(wakefield->log,
+                                    "WAKEFIELD: grabbing pixels at (%d, %d) of size %dx%d, format %s\n",
+                                    x_in_output, y_in_output,
+                                    width_in_output, height_in_output,
+                                    buffer_format_pixman == PIXMAN_a8r8g8b8 ? "ARGB8888" : "XRGB8888");
+
+            wakefield->compositor->renderer->read_pixels(output,
+                                                         buffer_format_pixman, // TODO: may not work with all renderers, check screenshooter_frame_notify() in libweston
+                                                         per_output_buffer,
+                                                         x_in_output, y_in_output,
+                                                         width_in_output, height_in_output);
+
+            copy_pixels_to_shm_buffer(buffer, per_output_buffer,
+                                      region_x_in_global - x, region_y_in_global - y,
+                                      width_in_output, height_in_output); // TODO: coordinates
+        }
+
+        pixman_region32_fini(&region_in_output);
+        pixman_region32_fini(&region_global);
+    }
+
+    free(per_output_buffer);
 
     wakefield_send_capture_ready(resource, buffer_resource, WAKEFIELD_ERROR_NO_ERROR);
 }
