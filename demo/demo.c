@@ -262,7 +262,6 @@ static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
 
     int32_t abs_x = client_state->surface_x + client_state->mouse_x;
     int32_t abs_y = client_state->surface_y + client_state->mouse_y;
-    //printf("abs (%d, %d)\n", abs_x, abs_y);
 
     if ((event->event_mask & POINTER_EVENT_BUTTON)
         && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT) {
@@ -279,7 +278,7 @@ static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
 
     if ((event->event_mask & POINTER_EVENT_BUTTON)
         && event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_MIDDLE) {
-        printf("Creating image capture for buffer %p\n", client_state->buffer_screenshot);
+        printf("Creating image capture at %d, %d\n", client_state->surface_x, client_state->surface_y);
         wakefield_capture_create(client_state->wakefield, client_state->buffer_screenshot,
                                  client_state->surface_x, client_state->surface_y);
     }
