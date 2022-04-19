@@ -3,6 +3,8 @@ project(wakefield C)
 
 set(CMAKE_C_STANDARD 11)
 
+set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_program(WAYLAND_SCANNER wayland-scanner)
 if (NOT WAYLAND_SCANNER)
     message(FATAL_ERROR "wayland-scanner not found")
@@ -53,3 +55,6 @@ add_library(wakefield SHARED src/wakefield.c wakefield-server-protocol.c wakefie
 target_include_directories(wakefield PUBLIC
         ${WESTON_INCLUDES} ${LIBWESTON_INCLUDES} ${PIXMAN_INCLUDES}
         ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+
+install(TARGETS wakefield DESTINATION .)
+
