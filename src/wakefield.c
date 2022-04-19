@@ -56,9 +56,14 @@ wakefield_get_pixel_color(struct wl_client *client,
     }
 
     struct weston_output *output = view->output;
+    const int output_x = x - output->x;
+    const int output_y = y - output->y;
+    weston_log_scope_printf(wakefield->log,
+                            "WAKEFIELD: reading pixel color at (%d, %d) of '%s'\n",
+                            output_x, output_y, output->name);
     compositor->renderer->read_pixels(output,
                                       compositor->read_format, &pixel,
-                                      x, y, 1, 1);
+                                      output_x, output_y, 1, 1);
 
     uint32_t rgb = 0;
     switch (compositor->read_format) {
