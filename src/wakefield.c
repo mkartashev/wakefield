@@ -20,6 +20,22 @@ struct wakefield {
     struct weston_log_scope *log;
 };
 
+static struct weston_output*
+get_output_for_point(struct wakefield* wakefield, int32_t x, int32_t y)
+{
+    struct weston_output *o;
+    wl_list_for_each(o, &wakefield->compositor->output_list, link) {
+        if (o->destroying)
+            continue;
+
+        if (pixman_region32_contains_point(&o->region, x, y, NULL)) {
+            return o;
+        }
+    }
+
+    return NULL;
+}
+
 static void
 wakefield_get_pixel_color(struct wl_client *client,
                           struct wl_resource *resource,
@@ -43,19 +59,14 @@ wakefield_get_pixel_color(struct wl_client *client,
         return;
     }
 
-    const wl_fixed_t xf = wl_fixed_from_int(x);
-    const wl_fixed_t yf = wl_fixed_from_int(y);
-    wl_fixed_t view_xf;
-    wl_fixed_t view_yf;
-    struct weston_view *view = weston_compositor_pick_view(compositor, xf, yf, &view_xf, &view_yf);
-    if (view == NULL) {
+    struct weston_output *output = get_output_for_point(wakefield, x, y);
+    if (output == NULL) {
         weston_log_scope_printf(wakefield->log,
-                                "WAKEFIELD: pixel location (%d, %d) doesn't map to any view\n", x, y);
+                                "WAKEFIELD: pixel location (%d, %d) doesn't map to any output\n", x, y);
         wakefield_send_pixel_color(resource, x, y, 0, WAKEFIELD_ERROR_INVALID_COORDINATES);
         return;
     }
-
-    struct weston_output *output = view->output;
+    
     const int output_x = x - output->x;
     const int output_y = y - output->y;
     weston_log_scope_printf(wakefield->log,
